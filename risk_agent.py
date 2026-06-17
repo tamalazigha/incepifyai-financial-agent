@@ -1,12 +1,11 @@
 """
 risk_agent.py — IncepifyAI Risk Assessment Agent (Agent 7 of 8)
- 
+FIXED VERSION — resolves silent fallback caused by max_tokens truncation.
+
 Synthesises outputs of Agents 1-6 into a comprehensive risk matrix.
 No web search. No external APIs. Single Claude API call.
-Input: combined dict of all prior agent results.
-Output: risk matrix, credit rating, covenants, Section 17 memo.
 """
- 
+
 import anthropic
 import json
 import os
@@ -14,40 +13,48 @@ import re
 from datetime import date
 from pathlib import Path
 from dotenv import load_dotenv
- 
+
 load_dotenv()
- 
+
 _PROMPT_PATH = Path("system_prompt_risk.txt")
 if not _PROMPT_PATH.exists():
     raise FileNotFoundError(
         "system_prompt_risk.txt not found. "
         "Ensure it is in the same directory as risk_agent.py."
     )
- 
+
 SYSTEM_PROMPT = _PROMPT_PATH.read_text()
 MODEL         = "claude-sonnet-4-6"
 client        = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
- 
- 
+
+# FIX #1: Increased from 8000 → 12000.
+# The risk matrix JSON (6 dimensions x 8 fields + key risks + covenants +
+# conditions + narrative) routinely needs 9,000-11,000 output tokens.
+# At 8000 the response was being truncated mid-JSON, which threw a
+# JSONDecodeError and silently degraded to the empty fallback object —
+# this is what was causing risk_matrix / key_risks / covenants to be empty.
+MAX_TOKENS = 12000
+
+
 # ─────────────────────────────────────────────────────
 # PUBLIC ENTRY POINTS
 # ─────────────────────────────────────────────────────
- 
+
 def assess_risk(all_agent_outputs: dict) -> dict:
     """
     Synthesise all prior agent outputs into a risk assessment.
- 
+
     Args:
         all_agent_outputs: dict with keys:
             financial_result, collateral_result, kyc_stored,
             revenue_result, industry_result, management_result
- 
+
     Returns:
         dict: comprehensive risk matrix and credit recommendation
     """
     return _run_claude_analysis(all_agent_outputs)
- 
- 
+
+
 def get_all_mock_inputs() -> dict:
     """
     Returns a combined mock input dict simulating all 6 prior agent outputs.
@@ -76,7 +83,7 @@ def get_all_mock_inputs() -> dict:
                 "Additional security of NGN 204.5m required to meet 150% coverage",
                 "Governors Consent on real property must be obtained",
             ],
-            "risk_flags": [{"flag":"Coverage Shortfall","severity":"HIGH"}],
+            "risk_flags": [{"flag": "Coverage Shortfall", "severity": "HIGH"}],
         },
         "kyc_stored": {
             "aggregate_assessment": {
@@ -116,13 +123,10 @@ def get_all_mock_inputs() -> dict:
             "management_overview": {"company_name": "Sunrise Manufacturing Ltd"},
         },
     }
- 
- 
+
+
 def get_mock_risk_result() -> dict:
-    """
-    Full static mock of the Agent 7 output. Zero API calls.
-    Use for UI testing.
-    """
+    """Full static mock of the Agent 7 output. Zero API calls."""
     return {
         "risk_summary": {
             "company_name":              "Sunrise Manufacturing Ltd",
@@ -130,95 +134,130 @@ def get_mock_risk_result() -> dict:
             "overall_credit_risk_rating": "WATCH",
             "credit_recommendation":      "APPROVE WITH CONDITIONS",
             "recommendation_rationale": (
-                "Sunrise Manufacturing presents a WATCH risk profile with three resolvable conditions: "
-                "collateral shortfall (requiring additional security), PEP-connected director "
-                "(requiring EDD and SM sign-off), and key man risk (requiring insurance policy). "
-                "Financial performance is satisfactory and the industry outlook is stable."
+                "Sunrise Manufacturing presents a WATCH risk profile with three "
+                "resolvable conditions: collateral shortfall, PEP-connected director, "
+                "and key man risk. Financial performance is satisfactory and the "
+                "industry outlook is stable."
             ),
         },
         "risk_matrix": [
-            {"risk_category":"Financial Risk","risk_description":"DSCR of 1.38x base case — adequate but stressed case dips to 1.05x in Year 1","likelihood":"LOW","impact":"MEDIUM","risk_rating":"LOW","key_driver":"Base DSCR 1.38x; stress DSCR 1.05x","mitigant":"Adequate base case coverage; stress testing within acceptable range","residual_risk":"LOW","source_agent":"Agent 1 — Financial Analysis"},
-            {"risk_category":"Collateral Risk","risk_description":"Coverage at 109.1% against 150% minimum — shortfall of NGN 204.5m","likelihood":"HIGH","impact":"HIGH","risk_rating":"VERY_HIGH","key_driver":"Coverage ratio 109.1% vs 150% minimum required","mitigant":"Additional security to be provided as condition precedent before disbursement","residual_risk":"MEDIUM","source_agent":"Agent 2 — Collateral & Security"},
-            {"risk_category":"Compliance / KYC Risk","risk_description":"PEP-connected director (ED Finance) — CBN EDD mandatory","likelihood":"MEDIUM","impact":"MEDIUM","risk_rating":"MEDIUM","key_driver":"ED Finance is sibling of State Commissioner — PEP under CBN KYC Manual","mitigant":"Enhanced Due Diligence completed; SM sign-off required and will be obtained","residual_risk":"LOW","source_agent":"Agent 3 — Reputation & KYC"},
-            {"risk_category":"Revenue / Relationship Risk","risk_description":"ROA of 0.84% below 1.0% GOLD threshold — SILVER tier relationship","likelihood":"MEDIUM","impact":"LOW","risk_rating":"LOW","key_driver":"ROA 0.84%; YTD revenue NGN 7.8m; YoY growth 12.4%","mitigant":"Revenue growing 12.4% YoY; cross-sell plan to improve ROA above 1.0%","residual_risk":"LOW","source_agent":"Agent 4 — Relationship & Revenue"},
-            {"risk_category":"Industry / Market Risk","risk_description":"FX input cost pressure in food manufacturing — moderate headwind","likelihood":"MEDIUM","impact":"MEDIUM","risk_rating":"MEDIUM","key_driver":"60% of raw materials imported; Naira devaluation increased input costs 30-40%","mitigant":"Industry outlook STABLE; domestic sourcing programme in place","residual_risk":"LOW","source_agent":"Agent 5 — Industry Intelligence"},
-            {"risk_category":"Management Risk","risk_description":"Key man dependency on MD; board lacks audit committee","likelihood":"MEDIUM","impact":"HIGH","risk_rating":"HIGH","key_driver":"Management score 7/10; MD holds all operational relationships; no succession plan","mitigant":"Key man insurance required as condition; audit committee to be established","residual_risk":"MEDIUM","source_agent":"Agent 6 — Management Assessment"},
+            {"risk_category":"Financial Risk","risk_description":"DSCR of 1.38x base case — adequate but stress case dips to 1.05x","likelihood":"LOW","impact":"MEDIUM","risk_rating":"LOW","key_driver":"Base DSCR 1.38x; stress DSCR 1.05x","mitigant":"Adequate base case coverage","residual_risk":"LOW","source_agent":"Agent 1"},
+            {"risk_category":"Collateral Risk","risk_description":"Coverage at 109.1% against 150% minimum","likelihood":"HIGH","impact":"HIGH","risk_rating":"VERY_HIGH","key_driver":"Coverage ratio 109.1% vs 150%","mitigant":"Additional security as condition precedent","residual_risk":"MEDIUM","source_agent":"Agent 2"},
+            {"risk_category":"Compliance Risk","risk_description":"PEP-connected director","likelihood":"MEDIUM","impact":"MEDIUM","risk_rating":"MEDIUM","key_driver":"ED Finance is PEP-connected","mitigant":"EDD completed; SM sign-off required","residual_risk":"LOW","source_agent":"Agent 3"},
+            {"risk_category":"Revenue Risk","risk_description":"ROA below GOLD threshold","likelihood":"MEDIUM","impact":"LOW","risk_rating":"LOW","key_driver":"ROA 0.84%; growth 12.4%","mitigant":"Cross-sell plan","residual_risk":"LOW","source_agent":"Agent 4"},
+            {"risk_category":"Industry Risk","risk_description":"FX input cost pressure","likelihood":"MEDIUM","impact":"MEDIUM","risk_rating":"MEDIUM","key_driver":"60% imported inputs","mitigant":"Domestic sourcing programme","residual_risk":"LOW","source_agent":"Agent 5"},
+            {"risk_category":"Management Risk","risk_description":"Key man dependency","likelihood":"MEDIUM","impact":"HIGH","risk_rating":"HIGH","key_driver":"MD holds all relationships","mitigant":"Key man insurance required","residual_risk":"MEDIUM","source_agent":"Agent 6"},
         ],
         "key_risks": [
-            {"rank":1,"risk_title":"Collateral Shortfall","risk_detail":"Security package covers only 109.1% of the facility against a 150% policy minimum — a shortfall of NGN 204.5m.","mitigant":"Additional security to be pledged as a condition precedent to first drawdown. No disbursement permitted until coverage reaches 150%.","residual_risk_after_mitigant":"LOW"},
-            {"rank":2,"risk_title":"Key Man Concentration — MD","risk_detail":"The Managing Director concentrates all operational decisions and key client/supplier relationships. No documented succession plan exists.","mitigant":"Key man life and disability insurance policy (bank as beneficiary, sum insured = facility amount) required as condition precedent. Board to formalise succession plan within 90 days of drawdown.","residual_risk_after_mitigant":"MEDIUM"},
-            {"rank":3,"risk_title":"PEP-Connected Director","risk_detail":"Executive Director (Finance) is an immediate family member of a serving State Commissioner under the CBN KYC/AML Manual PEP definition.","mitigant":"Enhanced Due Diligence completed. Senior management sign-off required before approval. Quarterly monitoring of director changes for the credit tenor.","residual_risk_after_mitigant":"LOW"},
+            {"rank":1,"risk_title":"Collateral Shortfall","risk_detail":"Security covers only 109.1% against 150% required.","mitigant":"Additional security as condition precedent.","residual_risk_after_mitigant":"LOW"},
+            {"rank":2,"risk_title":"Key Man Concentration","risk_detail":"MD concentrates all operational decisions.","mitigant":"Key man insurance required.","residual_risk_after_mitigant":"MEDIUM"},
+            {"rank":3,"risk_title":"PEP-Connected Director","risk_detail":"ED Finance is PEP-connected.","mitigant":"EDD completed; SM sign-off required.","residual_risk_after_mitigant":"LOW"},
         ],
         "cross_dimensional_risks": [
-            {"risk":"FX cost pressure compounds key man risk","agents_involved":["Agent 5","Agent 6"],"detail":"Naira-driven input cost inflation requires active hedging and supplier negotiation — skills currently concentrated in the MD. Incapacity of the MD during a FX stress period would be doubly damaging."},
+            {"risk":"FX pressure compounds key man risk","agents_involved":["Agent 5","Agent 6"],"detail":"Input cost management currently concentrated in the MD."},
         ],
         "conditions_precedent": [
-            "Additional security of NGN 204.5m minimum pledged to bring coverage to 150%",
-            "Governors Consent obtained and legal mortgage registered on warehouse property",
-            "Key man life and disability insurance — bank as beneficiary for full facility amount",
+            "Additional security of NGN 204.5m minimum pledged",
+            "Governors Consent obtained on warehouse property",
+            "Key man life and disability insurance required",
             "Senior management sign-off on EDD for PEP-connected director",
         ],
         "financial_covenants": [
-            "DSCR >= 1.20x measured semi-annually throughout the facility tenor",
-            "Maximum leverage ratio: Total Debt / EBITDA <= 3.5x",
-            "Minimum cash balance: 3 months of debt service to be maintained at all times",
-            "Accounts domiciliation: primary operating accounts to be maintained with the bank",
+            "DSCR >= 1.20x measured semi-annually",
+            "Maximum leverage: Total Debt / EBITDA <= 3.5x",
+            "Minimum cash balance: 3 months debt service",
+            "Accounts domiciliation with the bank",
         ],
         "structural_covenants": [
-            "Negative pledge: no additional charge over collateral assets without bank consent",
-            "Pari passu clause: no new senior unsecured borrowing without bank consent",
-            "Audit committee to be established within 90 days of first drawdown",
-            "Board succession plan for the MD to be submitted within 90 days",
+            "Negative pledge on collateral assets",
+            "Pari passu clause on additional borrowing",
+            "Audit committee within 90 days",
+            "Board succession plan within 90 days",
         ],
         "monitoring_requirements": [
-            "Semi-annual financial statements within 60 days of period end",
-            "Collateral revaluation annually (CBN-approved valuer)",
+            "Semi-annual financial statements within 60 days",
+            "Annual collateral revaluation",
             "Director change notification within 5 business days",
-            "KYC refresh: full EDD review annually given PEP-connected director",
+            "Annual EDD review",
         ],
-        "credit_memo_narrative": "Sunrise Manufacturing Ltd presents a WATCH credit risk profile — APPROVE WITH CONDITIONS. The collateral shortfall (109.1% vs 150%) is the primary risk, resolvable as a condition precedent. Secondary risks (key man dependency, PEP-connected director) are mitigated through insurance requirements and EDD. Financial performance is satisfactory (DSCR 1.38x, revenue +12.4% YoY) and the industry outlook is STABLE.",
+        "credit_memo_narrative": (
+            "Sunrise Manufacturing Ltd presents a WATCH credit risk profile — "
+            "APPROVE WITH CONDITIONS. The collateral shortfall is the primary risk, "
+            "resolvable as a condition precedent. Secondary risks (key man dependency, "
+            "PEP-connected director) are mitigated through insurance and EDD. "
+            "Financial performance is satisfactory and the industry outlook is STABLE."
+        ),
         "_metadata": {
-            "mode": "mock","model": None,
-            "input_tokens": 0,"output_tokens": 0,"estimated_cost_usd": 0.0
+            "mode": "mock", "model": None,
+            "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0.0,
+            "stop_reason": "end_turn",
         },
     }
- 
- 
+
+
 # ─────────────────────────────────────────────────────
 # CLAUDE API CALL — SINGLE CALL, NO AGENTIC LOOP
 # ─────────────────────────────────────────────────────
- 
+
 def _run_claude_analysis(all_outputs: dict) -> dict:
     """Single Claude call — no web search, no agentic loop."""
     if client is None:
         r = _build_fallback(all_outputs)
         r["_metadata"]["error"] = "ANTHROPIC_API_KEY not set."
         return r
- 
+
     company = _extract_company_name(all_outputs)
- 
+
     user_message = (
         f"Perform a comprehensive risk assessment for {company}.\n\n"
         "PRIOR AGENT OUTPUTS (all 6 agents):\n"
         f"{json.dumps(all_outputs, indent=2, default=str)}\n\n"
-        "Synthesise these into the risk matrix JSON. Return ONLY the JSON — no other text.",
+        "Synthesise these into the risk matrix JSON. Return ONLY the JSON — no other text."
     )
- 
+
+    raw_text_for_debug = ""
+
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=8000,
+            max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        text = next(
-            (b.text for b in response.content if getattr(b,"type",None)=="text"),
-            ""
-        )
+
+        # FIX #2: Explicitly check stop_reason BEFORE attempting to parse.
+        # If Claude was cut off mid-JSON, stop_reason will be "max_tokens"
+        # and the JSON will be incomplete — fail fast with a clear error
+        # instead of letting json.loads() throw a confusing exception.
+        stop_reason = response.stop_reason
+
+        text = "\n".join(
+            b.text for b in response.content
+            if getattr(b, "type", None) == "text"
+        ).strip()
+        raw_text_for_debug = text
+
+        if stop_reason == "max_tokens":
+            # The response was truncated. Don't even try to parse —
+            # we know it will fail. Surface this clearly instead of
+            # falling through to a generic JSON error.
+            r = _build_fallback(all_outputs)
+            r["_metadata"]["error"] = (
+                f"Response truncated at {MAX_TOKENS} max_tokens "
+                f"(stop_reason=max_tokens). The JSON was cut off mid-structure. "
+                f"Increase MAX_TOKENS in risk_agent.py if this recurs."
+            )
+            r["_metadata"]["stop_reason"]       = stop_reason
+            r["_metadata"]["raw_text_preview"]  = text[-500:]  # tail end shows the cutoff point
+            r["_metadata"]["input_tokens"]      = response.usage.input_tokens
+            r["_metadata"]["output_tokens"]     = response.usage.output_tokens
+            return r
+
         result = _parse_json(text)
         result["_metadata"] = {
             "mode":               "claude",
             "model":              MODEL,
+            "stop_reason":        stop_reason,
             "input_tokens":       response.usage.input_tokens,
             "output_tokens":      response.usage.output_tokens,
             "estimated_cost_usd": round(
@@ -227,56 +266,110 @@ def _run_claude_analysis(all_outputs: dict) -> dict:
             ),
         }
         return result
- 
+
     except (ValueError, json.JSONDecodeError) as exc:
+        # FIX #3: Surface the actual parse error AND a preview of what
+        # Claude returned, so the credit officer / developer can see
+        # exactly what went wrong instead of a silent empty fallback.
         r = _build_fallback(all_outputs)
         r["_metadata"]["error"] = f"JSON parse error: {exc}"
+        r["_metadata"]["raw_text_preview"] = raw_text_for_debug[-500:] if raw_text_for_debug else "(no text captured)"
         return r
     except anthropic.APIError as exc:
         r = _build_fallback(all_outputs)
-        r["_metadata"]["error"] = f"API error: {exc}"
+        r["_metadata"]["error"] = f"Anthropic API error: {exc}"
         return r
     except Exception as exc:
         r = _build_fallback(all_outputs)
         r["_metadata"]["error"] = f"{type(exc).__name__}: {exc}"
+        r["_metadata"]["raw_text_preview"] = raw_text_for_debug[-500:] if raw_text_for_debug else "(no text captured)"
         return r
- 
- 
+
+
 def _extract_company_name(all_outputs: dict) -> str:
     """Try to find the company name across any of the prior agent outputs."""
-    for key in ["management_result","financial_result","collateral_result",
-                "kyc_stored","revenue_result","industry_result"]:
+    for key in ["management_result", "financial_result", "collateral_result",
+                "kyc_stored", "revenue_result", "industry_result"]:
         result = all_outputs.get(key, {})
-        for sub in ["management_overview","credit_recommendation",
-                    "coverage_summary","screening_metadata",
-                    "relationship_profile","industry_profile"]:
-            name = result.get(sub, {}).get("company_name")
-            if name and name != "Unknown":
-                return name
+        if not isinstance(result, dict):
+            continue
+        for sub in ["management_overview", "credit_recommendation",
+                    "coverage_summary", "screening_metadata",
+                    "relationship_profile", "industry_profile"]:
+            sub_dict = result.get(sub, {})
+            if isinstance(sub_dict, dict):
+                name = sub_dict.get("company_name")
+                if name and name != "Unknown":
+                    return name
     return "The Applicant"
- 
- 
+
+
 def _parse_json(text: str) -> dict:
-    cleaned = re.sub(r"^```(?:json)?\s*","",text.strip(),flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*```$","",cleaned.strip()).strip()
+    """
+    Strip markdown fences and parse JSON reliably.
+    FIX #4: Also attempts a light repair pass for common truncation-adjacent
+    issues (trailing commas before closing brackets) before giving up.
+    """
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip()).strip()
+
+    # First attempt: parse as-is
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        start = cleaned.find("{")
-        if start == -1:
-            raise ValueError(f"No JSON in response: {text[:200]}")
-        depth = 0
-        for i, ch in enumerate(cleaned[start:], start=start):
-            if ch == "{": depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return json.loads(cleaned[start:i+1])
-        raise ValueError("Unbalanced JSON.")
- 
- 
+        pass
+
+    # Second attempt: strip trailing commas before } or ] (common LLM artifact)
+    repaired = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+
+    # Third attempt: brace-counting extraction of the first complete object
+    start = cleaned.find("{")
+    if start == -1:
+        raise ValueError(f"No JSON object found in response. First 200 chars: {text[:200]}")
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(cleaned[start:], start=start):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = cleaned[start:i + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Found a complete-looking JSON object but it failed to parse: {exc}. "
+                        f"This usually means the response was truncated mid-string. "
+                        f"Last 200 chars before failure point: ...{candidate[-200:]}"
+                    )
+
+    # We reached the end without depth returning to 0 — definitely truncated
+    raise ValueError(
+        f"JSON object was never closed (brace depth never returned to 0) — "
+        f"the response was truncated. Last 300 chars received: ...{cleaned[-300:]}"
+    )
+
+
 def _build_fallback(all_outputs: dict) -> dict:
-    """Minimal fallback if Claude fails."""
+    """Minimal fallback if Claude fails. Includes _metadata.error when set by caller."""
     company = _extract_company_name(all_outputs)
     return {
         "risk_summary": {
@@ -284,15 +377,19 @@ def _build_fallback(all_outputs: dict) -> dict:
             "assessment_date":            str(date.today()),
             "overall_credit_risk_rating": "WATCH",
             "credit_recommendation":      "REFER TO CREDIT COMMITTEE",
-            "recommendation_rationale":   "Fallback: full AI synthesis not completed. Manual review required.",
+            "recommendation_rationale":   "Automated risk synthesis could not be completed — see _metadata.error for details. Manual review required.",
         },
         "risk_matrix": [],
         "key_risks": [],
         "cross_dimensional_risks": [],
-        "conditions_precedent": ["Full risk assessment must be re-run before approval."],
+        "conditions_precedent": ["Full risk assessment must be re-run before approval — see _metadata.error."],
         "financial_covenants": [],
         "structural_covenants": [],
         "monitoring_requirements": [],
         "credit_memo_narrative": f"Risk assessment for {company} could not be completed automatically. Manual credit committee review is required.",
-        "_metadata": {"mode":"fallback","model":None,"input_tokens":0,"output_tokens":0,"estimated_cost_usd":0.0},
+        "_metadata": {
+            "mode": "fallback", "model": None,
+            "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0.0,
+        },
     }
+
